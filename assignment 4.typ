@@ -50,6 +50,8 @@ The whole scale space extrema calculation is performed in `scale_space_extrema`.
         The image resized to 300x300 pixels. There are 267 keypoints.
     ])
 
+The key points for the original and rotated image appear to be in the same places relative to the object in the image. The scaled image is very messy, but appears to have key points in the same spots as the other two images. This will improve in the next filtering steps.
+
 = Key Point Localization @sift[ch. 4]
 Key point localization builds upon the scale space extrema detection by filtering the initial key points.
 
@@ -95,7 +97,7 @@ The key point localization code is in `keypoint_localization`.
         The image resized to 300x300 pixels. There are 33 keypoints.
     ])
 
-The number of key points has been greatly reduced compared to the previous step.
+The number of key points has been greatly reduced compared to the previous step. Now, the scaled image has only ten more key points compared to the other two images and are close to the same place. There is likely a way to improve this further with a more correct and complete implementation.
 
 = Orientation Assignment @sift[ch. 5]
 This step assigns one or more orientations to each key point. The gradients are calculated within a region around the key point. The gradient magnitudes are distributed into a histogram with 36 bins, covering the 360 degree range. The magnitude is multiplied "by a Gaussian-weighted circular window with a #sym.sigma that is 1.5 times the scale of that keypoint." @sift[p.~13]
@@ -125,8 +127,10 @@ Some of the key points have the same position but have different directions. Com
 The code is found in `sift.py`. I left some comments. Some are quotes from @sift. Others reference a particular line from a reference SIFT implementation @sift_impl usually when I copied some constant that I didn't know how else to derive.
 
 = Discussion
+This was not easy to implement. The paper is very hard to read and is either missing lots of important information or is so terse I miss them. I found a reference SIFT implementation @sift_impl that I used very heavily when writing this code. There probably bugs in this implementation, but it seems to work. Rotating the image results in nearly the same output. The scaled up image resulted in more key points but are clustered around the same spots as in the original. The key point orientation also seems to be working. The directions of all the vectors are in the same spots relative to the object in all three image variations.
 
 = Conclusion
+The SIFT algorithm implemented in Python was able to successfully compute image features that are scale and rotation invariant. I learned how to implement most of the SIFT algorithm, including finding the scale space extrema, performing key point localization, and orientation assignment. This involved reading through the SIFT paper @sift and a reference implementation @sift_impl. I demonstrated that the algorithm was working by displaying the key points on an image, a scaled image, and a rotated image.
 
 #bibliography("refs.bib")
 
