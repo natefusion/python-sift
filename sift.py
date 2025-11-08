@@ -3,10 +3,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-image_filename = './blocks_L-150x150.png'
+# image_filename = './blocks_L-150x150.png'
+# image_filename = './blocks_L-150x150_flipped.png'
+image_filename = './blocks_L-300x300.png'
 image_8bit = cv2.imread(image_filename)
 image = np.array(image_8bit / 255.0, dtype=np.float32)
-
 
 def build_gaussian_pyramid(image, octaves, intervals, sigma):
     # "... We must produce s + 3 images in the stack of blurred images for each octave ..."
@@ -15,9 +16,10 @@ def build_gaussian_pyramid(image, octaves, intervals, sigma):
 
     # partial sigma values
     # the gaussian blur will blur a previously blurred image, so only perform an incremental blur to get to the correct sigma
+    # https://github.com/robwhess/opensift/blob/master/src/sift.c#L260
     k = 2**(1/intervals)
     sig[0] = sigma
-    sig[1] = sigma * np.sqrt(k*k - 1)
+    sig[1] = sigma * np.sqrt(k**2 - 1)
     for i in range(2, intervals + 3):
         sig[i] = sig[i-1] * k
 
@@ -25,7 +27,7 @@ def build_gaussian_pyramid(image, octaves, intervals, sigma):
         pyramid.append([])
         for i in range(0, intervals + 3):
             if (i == 0 and o == 0):
-                pyramid[o].append(image)
+                pyramid[o].append(cv2.GaussianBlur(image, (0,0), sig[i]))
             elif i == 0:
                 # "... it will be 2 images from the top of the stack ..."
                 src = pyramid[o-1][((intervals + 3) - 1) - 2]
@@ -47,6 +49,7 @@ def build_difference_of_gaussians_pyramid(gaussian_pyramid, octaves, intervals):
     return pyramid
 
 
+# https://en.wikipedia.org/wiki/Finite_difference#Multivariate_finite_differences
 def dog_ord1_partial_derivs(dog, octave, interval, row, col):
     dx = (dog[octave][interval][row+1][col] - dog[octave][interval][row-1][col]) / 2.0
     dy = (dog[octave][interval][row][col+1] - dog[octave][interval][row][col-1]) / 2.0
@@ -54,7 +57,7 @@ def dog_ord1_partial_derivs(dog, octave, interval, row, col):
     return np.array([[dx, dy, ds]]).T
 
 
-# https://en.wikipedia.org/wiki/Finite_difference#Generalizations
+# https://en.wikipedia.org/wiki/Finite_difference#Multivariate_finite_differences
 def dog_ord2_partial_derivs(dog, octave, interval, row, col):
     o = octave
     i = interval
@@ -75,7 +78,7 @@ def dog_ord2_partial_derivs(dog, octave, interval, row, col):
                      [dxs, dys, dss]])
 
 
-def should_accept_pixel(dog, octave, interval, row, col):
+def keypoint_localization(dog, octave, interval, row, col):
     # section 4
     H = dog_ord2_partial_derivs(dog, octave, interval, row, col)
     H_inv = np.linalg.inv(H)
@@ -89,7 +92,7 @@ def should_accept_pixel(dog, octave, interval, row, col):
 
     D = dog[octave][interval][row][col]    
     D_of_x_hat = D + 0.5 * deriv.T @ x_hat
-    good_value = np.linalg.norm(D_of_x_hat) >= 0.02
+    good_value = np.linalg.norm(D_of_x_hat) >= 0.03
 
     # section 4.1
     r = 10
@@ -120,7 +123,7 @@ def is_extremum(difference_of_gaussians_pyramid, octave, interval, row, col):
     return True
 
 
-def scale_space_extrema(difference_of_gaussians_pyramid, octaves, intervals):
+def scale_space_extrema(difference_of_gaussians_pyramid, octaves, intervals, with_keypoint_localization=True):
     features = []
     for o in range(0, octaves):
         print("Octave", o)
@@ -130,7 +133,12 @@ def scale_space_extrema(difference_of_gaussians_pyramid, octaves, intervals):
             for r in range(1, height-1):
                 for c in range(1, width-1):
                     if is_extremum(difference_of_gaussians_pyramid, o, i, r, c):
-                        if should_accept_pixel(difference_of_gaussians_pyramid, o, i, r, c):
+                        if with_keypoint_localization:
+                            if keypoint_localization(difference_of_gaussians_pyramid, o, i, r, c):
+                                features.append((o, i, r, c))
+                            else:
+                                pass
+                        else:
                             features.append((o, i, r, c))
     return features
 
@@ -155,8 +163,12 @@ def orientation_assignment(gaussian_pyramid, features, intervals, sigma_init):
     num_bins = 36
     
     for o, i, r, c in features:
-        scale = sigma_init * (2.0 ** (o + i / intervals))
-        sigma = sigma_init * scale
+        # https://github.com/robwhess/opensift/blob/master/src/sift.c#L764
+        scale_octave = sigma_init * 2.0**(i/intervals)
+        # https://github.com/robwhess/opensift/blob/master/src/sift.c#L819
+        sigma = scale_octave * 1.5
+        
+        # https://github.com/robwhess/opensift/blob/master/src/sift.c#L818
         rad = int(np.round(3.0 * sigma))
 
         hist = np.zeros((num_bins,))
@@ -196,6 +208,7 @@ def compute_descriptors(features, gaussian_pyramid, d, n, sigma_init):
         sin_t = np.sin(ori)
         bin_per_rad = n / (2 * np.pi)
         exp_denom = d * d * 0.5
+
         scale = sigma_init * (2.0 ** (o + i / intervals))
         hist_width = 3 * scale
         radius = int(hist_width * np.sqrt(2) * (d + 1.0) * 0.5 + 0.5)
@@ -222,14 +235,16 @@ def compute_descriptors(features, gaussian_pyramid, d, n, sigma_init):
 
 def sift_features(image, intervals, sigma):
     image_gray = cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
-    sigma_gaussian = np.sqrt(max(sigma*sigma - 0.5*0.5, 0.1))
-    image_smooth = cv2.GaussianBlur(image_gray, (0,0), sigma_gaussian)
-    octaves = round(np.log(np.min(image_smooth.shape)) / np.log(2) - 2)
-    gaussian_pyramid = build_gaussian_pyramid(image_smooth, octaves, intervals, sigma)
+    
+    # https://github.com/robwhess/opensift/blob/master/src/sift.c#L133
+    octaves = int(round(np.log2(np.min(image_gray.shape)) - 2))
+    
+    gaussian_pyramid = build_gaussian_pyramid(image_gray, octaves, intervals, sigma)
     difference_of_gaussians_pyramid = build_difference_of_gaussians_pyramid(gaussian_pyramid, octaves, intervals)
-    features = scale_space_extrema(difference_of_gaussians_pyramid, octaves, intervals)
+    features_without_localization = scale_space_extrema(difference_of_gaussians_pyramid, octaves, intervals, with_keypoint_localization=False)
+    features = scale_space_extrema(difference_of_gaussians_pyramid, octaves, intervals, with_keypoint_localization=True)
     features_with_ori = orientation_assignment(gaussian_pyramid, features, intervals, sigma)
-    return gaussian_pyramid, difference_of_gaussians_pyramid, features, features_with_ori
+    return gaussian_pyramid, difference_of_gaussians_pyramid, features_without_localization, features, features_with_ori
     
 
 def hstack_resize(array_of_images):
@@ -266,33 +281,38 @@ def opencv_sift():
 
 if __name__ == '__main__':
     cv2.namedWindow("Display window", cv2.WINDOW_NORMAL)
-    gaussian_pyramid, difference_of_gaussians_pyramid, features, features_with_ori = sift_features(image, 5, np.sqrt(2)/2)
-    
-    features_image = np.zeros((image.shape[0], image.shape[1],))
+    gaussian_pyramid, difference_of_gaussians_pyramid, features_without_localization, features, features_with_ori = sift_features(image, 2, 1.6)
+
+    features_without_localization_image = np.copy(image)
+    for o, i, r, c in features_without_localization:
+        rs = r * 2**o
+        cs = c * 2**o
+        cv2.circle(img=features_without_localization_image, center=(cs, rs), radius=3, color=(255, 0, 0), thickness=1)
+        
+    features_image = np.copy(image)
     for o, i, r, c in features:
         rs = r * 2**o
         cs = c * 2**o
-        features_image[rs][cs] = 1.0
+        cv2.circle(img=features_image, center=(cs, rs), radius=3, color=(255, 0, 0), thickness=1)
 
-    features_with_ori_image = np.zeros((image.shape[0], image.shape[1],))
+    features_after_orientation_assignment_image = np.copy(image)
     for o, i, r, c, d in features_with_ori:
         rs = r * 2**o
         cs = c * 2**o
-        features_with_ori_image[rs][cs] = 1.0
+        cv2.line(img=features_after_orientation_assignment_image, pt1=(cs, rs), pt2=(cs+int(10*np.sin(d)), rs+int(10*np.cos(d))), color=(0, 255, 0), thickness=1)
+        cv2.circle(img=features_after_orientation_assignment_image, center=(cs, rs), radius=3, color=(255, 0, 0), thickness=1)
 
-    image_with_keypoints = np.copy(image)
-    for o, i, r, c, d in features_with_ori:
-        rs = r * 2**o
-        cs = c * 2**o
-        cv2.circle(img=image_with_keypoints, center=(cs, rs), radius=3, color=(255, 0, 0), thickness=1)
-            
-    print(f'There are {len(features)} key points')
-    print(f'There are {len(features_with_ori)} key points (after orientation assignment)')
-    blurred = organize_scale_space(gaussian_pyramid)
-    dog = cv2.convertScaleAbs(organize_scale_space(difference_of_gaussians_pyramid), alpha=0.5, beta=0.5)
-
-    # cv2.imshow("Display window", hstack_resize([blurred, dog, features_image, features_with_ori_image]))
-    cv2.imshow("Display window", image_with_keypoints)
+    print(f'There are {len(features_without_localization)} key points (Before keypoint localization')
+    print(f'There are {len(features)} key points (After keypoint localization')
+    print(f'There are {len(features_with_ori)} key points (After orientation assignment)')
+    # blurred = organize_scale_space(gaussian_pyramid)
+    # dog = cv2.convertScaleAbs(organize_scale_space(difference_of_gaussians_pyramid), alpha=0.5, beta=0.5)
+    # cv2.imshow("Display window", hstack_resize([blurred, dog]))
+    
+    # cv2.imshow("Display window", features_without_localization_image)
+    # cv2.imshow("Display window", features_image)
+    cv2.imshow("Display window", features_after_orientation_assignment_image)
+    
     while cv2.waitKey(0) & 0xFF != ord('q'):
         pass
     cv2.destroyAllWindows()
