@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-# image_filename = './blocks_L-150x150.png'
+image_filename = './blocks_L-150x150.png'
 # image_filename = './blocks_L-150x150_flipped.png'
 # image_filename = './blocks_L-300x300.png'
 image_8bit = cv2.imread(image_filename)
