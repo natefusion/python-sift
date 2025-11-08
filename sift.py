@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 # image_filename = './blocks_L-150x150.png'
 # image_filename = './blocks_L-150x150_flipped.png'
-image_filename = './blocks_L-300x300.png'
+# image_filename = './blocks_L-300x300.png'
 image_8bit = cv2.imread(image_filename)
 image = np.array(image_8bit / 255.0, dtype=np.float32)
 
@@ -14,7 +14,7 @@ def build_gaussian_pyramid(image, octaves, intervals, sigma):
     sig = np.zeros(intervals + 3)
     pyramid = []
 
-    # partial sigma values
+    # differential sigma values
     # the gaussian blur will blur a previously blurred image, so only perform an incremental blur to get to the correct sigma
     # https://github.com/robwhess/opensift/blob/master/src/sift.c#L260
     k = 2**(1/intervals)
@@ -199,7 +199,7 @@ def orientation_assignment(gaussian_pyramid, features, intervals, sigma_init):
                 new_features.append((o, i, r, c, d))
     return new_features
 
-
+# I didn't actually complete this, ignore it
 def compute_descriptors(features, gaussian_pyramid, d, n, sigma_init):
     new_features = []
     for o, i, r, c, ori in features:
